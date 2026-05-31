@@ -29,7 +29,9 @@ class Qwen25VLRunner(BaseVLMRunner):
             self.hf_id,
             torch_dtype=self.dtype,
             attn_implementation="eager",
-        ).to(self.device).eval()
+            low_cpu_mem_usage=True,
+            device_map=self.device,  # stream weights straight to GPU; avoids CPU-RAM spike
+        ).eval()
 
     def _prep_inputs(self, image: Image.Image, question: str):
         # Qwen2.5-VL expects qwen_vl_utils.process_vision_info. We install it via pip in setup.
@@ -53,6 +55,10 @@ class Qwen25VLRunner(BaseVLMRunner):
             padding=True,
             return_tensors="pt",
         ).to(self.device)
+        # pixel_values come out float32; cast floating tensors to the model dtype so the
+        # vision tower doesn't hit a float32-vs-float16 matmul error inside generate().
+        if "pixel_values" in inputs and inputs["pixel_values"].is_floating_point():
+            inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
         return inputs
 
     def _count_visual_tokens(self, inputs) -> int:
@@ -72,7 +78,7 @@ class Qwen25VLRunner(BaseVLMRunner):
         reset_vram_peak()
         inputs = self._prep_inputs(image, question)
 
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300)
         gen_kwargs = dict(
             **inputs,
             max_new_tokens=max_new_tokens,

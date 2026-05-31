@@ -1,4 +1,5 @@
 """Efficiency metric helpers: VRAM peak, TTFT / throughput via streamer, visual token counting."""
+import queue
 import threading
 import time
 from dataclasses import dataclass
@@ -63,10 +64,16 @@ def run_generation_with_streamer(
 
     pieces: list[str] = []
     ttft: Optional[float] = None
-    for piece in streamer:
-        if ttft is None:
-            ttft = time.perf_counter() - t0
-        pieces.append(piece)
+    # If generate() raises before the streamer emits its end signal, iterating the
+    # streamer would otherwise block forever. A streamer built with a timeout raises
+    # queue.Empty instead; we then join the worker and re-raise the real error.
+    try:
+        for piece in streamer:
+            if ttft is None:
+                ttft = time.perf_counter() - t0
+            pieces.append(piece)
+    except queue.Empty:
+        pass
 
     thread.join()
     if "err" in error_box:

@@ -29,7 +29,9 @@ class Phi35VRunner(BaseVLMRunner):
             trust_remote_code=True,
             torch_dtype=self.dtype,
             attn_implementation="eager",
-        ).to(self.device).eval()
+            low_cpu_mem_usage=True,
+            device_map=self.device,  # stream weights straight to GPU; avoids CPU-RAM spike
+        ).eval()
 
     def _prep_inputs(self, image: Image.Image, question: str):
         messages = [{"role": "user", "content": f"<|image_1|>\n{question}"}]
@@ -54,7 +56,7 @@ class Phi35VRunner(BaseVLMRunner):
         reset_vram_peak()
         inputs = self._prep_inputs(image, question)
 
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300)
         gen_kwargs = dict(
             **inputs,
             max_new_tokens=max_new_tokens,
