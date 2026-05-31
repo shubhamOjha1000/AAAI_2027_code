@@ -3,7 +3,7 @@ import time
 
 import torch
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor, TextIteratorStreamer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, TextIteratorStreamer
 
 from .base import BaseVLMRunner
 from ..metrics.efficiency import (
@@ -24,8 +24,21 @@ class Phi35VRunner(BaseVLMRunner):
             self.hf_id, trust_remote_code=True, num_crops=4
         )
         self.tokenizer = self.processor.tokenizer
+
+        # Phi-3.5-V's remote code defaults to FlashAttention-2, which a T4 (Turing, sm75)
+        # cannot run at all. Force eager on the config and every sub-config so it never
+        # tries to dispatch FA2 (the attn_implementation kwarg alone doesn't propagate
+        # through the custom Phi3VConfig).
+        cfg = AutoConfig.from_pretrained(self.hf_id, trust_remote_code=True)
+        cfg._attn_implementation = "eager"
+        for sub in ("vision_config", "text_config", "embd_layer", "img_processor"):
+            sc = getattr(cfg, sub, None)
+            if hasattr(sc, "_attn_implementation"):
+                sc._attn_implementation = "eager"
+
         self.model = AutoModelForCausalLM.from_pretrained(
             self.hf_id,
+            config=cfg,
             trust_remote_code=True,
             torch_dtype=self.dtype,
             attn_implementation="eager",
