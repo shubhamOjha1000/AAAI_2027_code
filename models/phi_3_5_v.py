@@ -3,7 +3,13 @@ import time
 
 import torch
 from PIL import Image
-from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor, TextIteratorStreamer
+from transformers import (
+    AutoConfig,
+    AutoModelForCausalLM,
+    AutoProcessor,
+    PretrainedConfig,
+    TextIteratorStreamer,
+)
 
 from .base import BaseVLMRunner
 from ..metrics.efficiency import (
@@ -13,6 +19,15 @@ from ..metrics.efficiency import (
     reset_vram_peak,
     run_generation_with_streamer,
 )
+
+
+def _force_eager_attention(cfg: PretrainedConfig) -> None:
+    """Recursively set eager attention on a config and every nested sub-config."""
+    cfg._attn_implementation = "eager"
+    cfg._attn_implementation_autoset = True
+    for value in vars(cfg).values():
+        if isinstance(value, PretrainedConfig):
+            _force_eager_attention(value)
 
 
 class Phi35VRunner(BaseVLMRunner):
@@ -26,15 +41,11 @@ class Phi35VRunner(BaseVLMRunner):
         self.tokenizer = self.processor.tokenizer
 
         # Phi-3.5-V's remote code defaults to FlashAttention-2, which a T4 (Turing, sm75)
-        # cannot run at all. Force eager on the config and every sub-config so it never
-        # tries to dispatch FA2 (the attn_implementation kwarg alone doesn't propagate
-        # through the custom Phi3VConfig).
+        # cannot run at all. The attn_implementation kwarg doesn't propagate through the
+        # custom Phi3VConfig, so recursively force eager on the config and EVERY nested
+        # sub-config (the vision encoder hides under one of them) before loading.
         cfg = AutoConfig.from_pretrained(self.hf_id, trust_remote_code=True)
-        cfg._attn_implementation = "eager"
-        for sub in ("vision_config", "text_config", "embd_layer", "img_processor"):
-            sc = getattr(cfg, sub, None)
-            if hasattr(sc, "_attn_implementation"):
-                sc._attn_implementation = "eager"
+        _force_eager_attention(cfg)
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.hf_id,
