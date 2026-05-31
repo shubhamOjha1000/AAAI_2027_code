@@ -1,16 +1,29 @@
 """Central configuration for the WearVQA benchmark pipeline."""
+import os
 from pathlib import Path
 
-# Root paths. Override PROJECT_ROOT from the notebook if running on Colab.
+# Root paths. On Colab the code is cloned from GitHub while the dataset lives
+# directly on Drive, so the dataset is *not* under PROJECT_ROOT. Override any of
+# these from the notebook by exporting the matching env var before importing this
+# module:
+#   WEARVQA_DATASET_DIR   e.g. /content/drive/MyDrive/wearvqa
+#   WEARVQA_RESULTS_DIR   e.g. /content/drive/MyDrive/wearvqa_results
+#   WEARVQA_MAX_SAMPLES   integer, or "none"/"all" for the full test set
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATASET_DIR = PROJECT_ROOT / "wearvqa"
-RESULTS_DIR = PROJECT_ROOT / "results"
+DATASET_DIR = Path(os.environ.get("WEARVQA_DATASET_DIR", PROJECT_ROOT / "wearvqa"))
+RESULTS_DIR = Path(os.environ.get("WEARVQA_RESULTS_DIR", PROJECT_ROOT / "results"))
 PREDICTIONS_DIR = RESULTS_DIR / "predictions"
 JUDGMENTS_DIR = RESULTS_DIR / "judgments"
 REPORTS_DIR = RESULTS_DIR / "reports"
 
 # Smoke-test cap. Set to None for the full 1,500-sample public test set.
-MAX_SAMPLES = 10
+_env_max = os.environ.get("WEARVQA_MAX_SAMPLES")
+if _env_max is None:
+    MAX_SAMPLES = 10
+elif _env_max.strip().lower() in {"none", "all", ""}:
+    MAX_SAMPLES = None
+else:
+    MAX_SAMPLES = int(_env_max)
 
 # Inference settings.
 BATCH_SIZE = 1
