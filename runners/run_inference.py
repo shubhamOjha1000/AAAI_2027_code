@@ -16,9 +16,6 @@ def _make_runner(model_name: str) -> BaseVLMRunner:
     entry = config.MODEL_REGISTRY[model_name]
     hf_id = entry["hf_id"]
     dtype = entry["dtype"]
-    if model_name == "minicpm_v_4_6":
-        from ..models.minicpm_v_4_6 import MiniCPMV46Runner
-        return MiniCPMV46Runner(hf_id=hf_id, dtype=dtype)
     if model_name == "smolvlm2":
         from ..models.smolvlm2 import SmolVLM2Runner
         return SmolVLM2Runner(hf_id=hf_id, dtype=dtype)
