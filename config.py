@@ -37,16 +37,6 @@ MODEL_REGISTRY = {
         "display_name": "SmolVLM2 (2.2B)",
         "dtype": "float16",
     },
-    "qwen2_5_vl": {
-        "hf_id": "Qwen/Qwen2.5-VL-3B-Instruct",
-        "display_name": "Qwen2.5-VL (3B)",
-        "dtype": "float16",
-    },
-    "phi_3_5_v": {
-        "hf_id": "microsoft/Phi-3.5-vision-instruct",
-        "display_name": "Phi-3.5-Vision (4.2B)",
-        "dtype": "float16",
-    },
 }
 
 # LLM-as-judge config.

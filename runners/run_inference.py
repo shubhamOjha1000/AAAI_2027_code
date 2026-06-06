@@ -19,12 +19,6 @@ def _make_runner(model_name: str) -> BaseVLMRunner:
     if model_name == "smolvlm2":
         from ..models.smolvlm2 import SmolVLM2Runner
         return SmolVLM2Runner(hf_id=hf_id, dtype=dtype)
-    if model_name == "qwen2_5_vl":
-        from ..models.qwen2_5_vl import Qwen25VLRunner
-        return Qwen25VLRunner(hf_id=hf_id, dtype=dtype)
-    if model_name == "phi_3_5_v":
-        from ..models.phi_3_5_v import Phi35VRunner
-        return Phi35VRunner(hf_id=hf_id, dtype=dtype)
     raise KeyError(f"Unknown model: {model_name}")
 
 
