@@ -79,26 +79,24 @@ MODEL_REGISTRY = {
         "dtype": "float16",
         "runner": "internvl2_5",
     },
-    # --- LLaVA-NeXT (v1.6); 7B/13B decoders loaded in 4-bit for the T4 ---
+    # --- LLaVA-NeXT (v1.6); full fp16 (fits an A100) ---
     "llava_next_mistral_7b": {
         "hf_id": "llava-hf/llava-v1.6-mistral-7b-hf",
         "display_name": "LLaVA-1.6 Mistral-7B",
         "dtype": "float16",
         "runner": "llava_next",
-        "load_in_4bit": True,
     },
     "llava_next_vicuna_13b": {
         "hf_id": "llava-hf/llava-v1.6-vicuna-13b-hf",
         "display_name": "LLaVA-1.6 Vicuna-13B",
         "dtype": "float16",
         "runner": "llava_next",
-        "load_in_4bit": True,
     },
 }
 
-# LLM-as-judge config.
+# LLM-as-judge config. Full fp16 (fits an A100); set to True to 4-bit on smaller GPUs.
 JUDGE_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
-JUDGE_LOAD_IN_4BIT = True
+JUDGE_LOAD_IN_4BIT = False
 JUDGE_MAX_NEW_TOKENS = 256
 JUDGE_BATCH_SIZE = 1
 
