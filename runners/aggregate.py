@@ -72,38 +72,53 @@ def build_reports(
                         .sort_values(["model", "judge"]).reset_index(drop=True))
     judge_accuracy.to_csv(reports_dir / "judge_accuracy.csv", index=False)
 
-    # --- detailed breakdowns use the consensus correctness ---
-    merged = pdf.merge(cons[["model", "sample_id", "correct"]],
-                       on=["model", "sample_id"], how="inner")
-    merged.to_csv(reports_dir / "joined_full.csv", index=False)
+    # --- overall consensus per model (back-compat overall_accuracy.csv) ---
+    cons_merged = pdf.merge(cons[["model", "sample_id", "correct"]],
+                            on=["model", "sample_id"], how="inner")
+    overall_rows = []
+    for model_name, df in cons_merged.groupby("model"):
+        o = overall_accuracy(df.to_dict(orient="records"))
+        o["model"] = model_name
+        overall_rows.append(o)
+    overall_df = pd.DataFrame(overall_rows)[["model", "n", "correct", "accuracy_pct"]]
 
-    overall_rows, eff_rows = [], []
+    # --- efficiency is judge-independent: computed straight from predictions ---
+    eff_rows = []
+    for model_name, df in pdf.groupby("model"):
+        e = efficiency_summary(df.to_dict(orient="records"))
+        e["model"] = model_name
+        eff_rows.append(e)
+
+    # --- per-judge (+ majority_vote) detailed breakdowns ---
+    cons_tagged = cons[["model", "sample_id", "correct"]].copy()
+    cons_tagged["judge"] = "majority_vote"
+    all_verdicts = pd.concat(
+        [jdf[["model", "sample_id", "judge", "correct"]], cons_tagged],
+        ignore_index=True,
+    )
+    vmerged = all_verdicts.merge(pdf, on=["model", "sample_id"], how="inner")
+    vmerged.to_csv(reports_dir / "joined_full.csv", index=False)
+
     domain_dfs, qtype_dfs, quality_dfs, hi_lo_dfs = [], [], [], []
-    for model_name, df in merged.groupby("model"):
+    for (judge_key, model_name), df in vmerged.groupby(["judge", "model"]):
         recs = df.to_dict(orient="records")
-
-        overall = overall_accuracy(recs)
-        overall["model"] = model_name
-        overall_rows.append(overall)
-
-        eff = efficiency_summary(recs)
-        eff["model"] = model_name
-        eff_rows.append(eff)
 
         for dfs, field in ((domain_dfs, "domain"), (qtype_dfs, "question_type")):
             t = accuracy_by_field(recs, field)
             t.insert(0, "model", model_name)
+            t.insert(0, "judge", judge_key)
             dfs.append(t)
 
         ql = accuracy_by_quality(recs)
         ql.insert(0, "model", model_name)
+        ql.insert(0, "judge", judge_key)
         quality_dfs.append(ql)
 
         hl = hi_vs_lo_quality(recs)
         hl.insert(0, "model", model_name)
+        hl.insert(0, "judge", judge_key)
         hi_lo_dfs.append(hl)
 
-    overall_df = pd.DataFrame(overall_rows)[["model", "n", "correct", "accuracy_pct"]]
     eff_df = pd.DataFrame(eff_rows)
     cols = ["model", "n", "mean_ttft_s", "mean_throughput_tok_s",
             "mean_peak_vram_gb", "mean_visual_tokens", "mean_output_tokens",
@@ -125,7 +140,8 @@ def build_reports(
     md_lines.append(judge_accuracy.to_markdown(index=False))
     md_lines.append("")
     md_lines.append("## High vs low quality images (consensus)")
-    md_lines.append(pd.concat(hi_lo_dfs, ignore_index=True).to_markdown(index=False))
+    hi_lo_all = pd.concat(hi_lo_dfs, ignore_index=True)
+    md_lines.append(hi_lo_all[hi_lo_all["judge"] == "majority_vote"].to_markdown(index=False))
     (reports_dir / "summary_table.md").write_text("\n".join(md_lines), encoding="utf-8")
     print(f"[aggregate] reports written under {reports_dir}")
     return reports_dir
