@@ -54,6 +54,23 @@ class SmolVLMRunner(BaseVLMRunner):
             return -1
         return int((input_ids == img_id).sum().item())
 
+    def predict_batch(self, images, questions, max_new_tokens):
+        self.processor.tokenizer.padding_side = "left"  # decoder-only batched generation
+        prompts = []
+        for q in questions:
+            msgs = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": q}]}]
+            prompts.append(self.processor.apply_chat_template(msgs, add_generation_prompt=True))
+        inputs = self.processor(
+            text=prompts, images=[[img] for img in images],
+            return_tensors="pt", padding=True,
+        ).to(self.device)
+        if "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
+        with torch.no_grad():
+            gen = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        trimmed = gen[:, inputs["input_ids"].shape[1]:]
+        return [t.strip() for t in self.processor.batch_decode(trimmed, skip_special_tokens=True)]
+
     def infer(self, image: Image.Image, question: str, max_new_tokens: int) -> GenerationMetrics:
         reset_vram_peak()
         inputs = self._prep_inputs(image, question)

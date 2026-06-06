@@ -1,7 +1,7 @@
 """Abstract base class all VLM runners implement."""
 import gc
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from PIL import Image
@@ -56,6 +56,16 @@ class BaseVLMRunner(ABC):
 
     @abstractmethod
     def infer(self, image: Image.Image, question: str, max_new_tokens: int) -> GenerationMetrics: ...
+
+    def predict_batch(
+        self, images: List[Image.Image], questions: List[str], max_new_tokens: int
+    ) -> List[str]:
+        """Accuracy-only batched generation: return just the answer text per sample.
+
+        Default falls back to per-sample infer() (correct, but no speedup). Adapters
+        that support true batching override this for a real throughput win.
+        """
+        return [self.infer(img, q, max_new_tokens).output_text for img, q in zip(images, questions)]
 
     def unload(self) -> None:
         self.model = None

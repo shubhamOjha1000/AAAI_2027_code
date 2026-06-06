@@ -69,10 +69,16 @@ def hi_vs_lo_quality(joined_rows: list[dict]) -> pd.DataFrame:
 
 
 def efficiency_summary(prediction_rows: list[dict]) -> dict:
-    """Mean of the per-sample efficiency metrics."""
+    """Mean of the per-sample efficiency metrics.
+
+    Tolerant of accuracy-mode rows that carry no timing fields: a metric with no
+    numeric values returns NaN instead of raising.
+    """
     if not prediction_rows:
         return {}
-    def m(k): return sum(r[k] for r in prediction_rows) / len(prediction_rows)
+    def m(k):
+        vals = [r[k] for r in prediction_rows if r.get(k) is not None]
+        return sum(vals) / len(vals) if vals else float("nan")
     return {
         "n": len(prediction_rows),
         "mean_ttft_s": m("ttft_s"),

@@ -46,6 +46,22 @@ class LlavaNextRunner(BaseVLMRunner):
             return -1
         return int((inputs["input_ids"] == img_id).sum().item())
 
+    def predict_batch(self, images, questions, max_new_tokens):
+        self.processor.tokenizer.padding_side = "left"  # decoder-only batched generation
+        prompts = []
+        for q in questions:
+            conv = [{"role": "user", "content": [{"type": "text", "text": q}, {"type": "image"}]}]
+            prompts.append(self.processor.apply_chat_template(conv, add_generation_prompt=True))
+        inputs = self.processor(
+            images=images, text=prompts, return_tensors="pt", padding=True,
+        ).to(self.model.device)
+        if "pixel_values" in inputs:
+            inputs["pixel_values"] = inputs["pixel_values"].to(self.dtype)
+        with torch.no_grad():
+            gen = self.model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        trimmed = gen[:, inputs["input_ids"].shape[1]:]
+        return [t.strip() for t in self.processor.batch_decode(trimmed, skip_special_tokens=True)]
+
     def infer(self, image: Image.Image, question: str, max_new_tokens: int) -> GenerationMetrics:
         reset_vram_peak()
         inputs = self._prep_inputs(image, question)

@@ -112,6 +112,21 @@ class InternVL25Runner(BaseVLMRunner):
             return -1
         return int(pixel_values.shape[0] * n_tok)
 
+    def predict_batch(self, images, questions, max_new_tokens):
+        pv_list, num_patches = [], []
+        for img in images:
+            pv = self._pixel_values(img)
+            pv_list.append(pv)
+            num_patches.append(pv.shape[0])
+        pixel_values = torch.cat(pv_list, dim=0)
+        qs = ["<image>\n" + q for q in questions]
+        gen_cfg = dict(max_new_tokens=max_new_tokens, do_sample=False)
+        responses = self.model.batch_chat(
+            self.tokenizer, pixel_values,
+            num_patches_list=num_patches, questions=qs, generation_config=gen_cfg,
+        )
+        return [r.strip() for r in responses]
+
     def infer(self, image: Image.Image, question: str, max_new_tokens: int) -> GenerationMetrics:
         reset_vram_peak()
         pixel_values = self._pixel_values(image)

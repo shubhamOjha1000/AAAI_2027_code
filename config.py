@@ -26,7 +26,9 @@ else:
     MAX_SAMPLES = int(_env_max)
 
 # Inference settings.
-BATCH_SIZE = 1
+# BATCH_SIZE is used by the "accuracy" run mode (batched generation, predictions only).
+# The "efficiency" mode always runs batch_size=1 because TTFT/throughput need streaming.
+BATCH_SIZE = 256
 MAX_NEW_TOKENS = 256
 DO_SAMPLE = False
 

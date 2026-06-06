@@ -10,14 +10,19 @@ from ..judge.qwen_judge import QwenJudge
 from ..utils.io import append_jsonl, ensure_dir, read_jsonl
 
 
-def _prediction_files(predictions_dir: Path) -> list[Path]:
-    return sorted(p for p in Path(predictions_dir).glob("*.jsonl"))
+def _prediction_files(predictions_dir: Path, models=None) -> list[Path]:
+    files = sorted(p for p in Path(predictions_dir).glob("*.jsonl"))
+    if models:
+        wanted = set(models)
+        files = [p for p in files if p.stem in wanted]
+    return files
 
 
 def judge_all(
     predictions_dir: Optional[Path] = None,
     judgments_dir: Optional[Path] = None,
     judge: Optional[QwenJudge] = None,
+    models=None,
 ) -> Path:
     predictions_dir = Path(predictions_dir or config.PREDICTIONS_DIR)
     judgments_dir = Path(judgments_dir or config.JUDGMENTS_DIR)
@@ -33,7 +38,7 @@ def judge_all(
         judge.load()
 
     try:
-        for pred_file in _prediction_files(predictions_dir):
+        for pred_file in _prediction_files(predictions_dir, models):
             print(f"[judge] scoring {pred_file.name}")
             for pred in tqdm(list(read_jsonl(pred_file)), desc=pred_file.stem):
                 if pred.get("error") or not pred.get("prediction"):
