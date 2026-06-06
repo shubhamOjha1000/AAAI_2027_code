@@ -87,9 +87,16 @@ class InternVL25Runner(BaseVLMRunner):
     MAX_NUM = 12
 
     def load(self) -> None:
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.hf_id, trust_remote_code=True, use_fast=False
-        )
+        # InternVL ships a slow (sentencepiece/tiktoken) tokenizer; fall back to the
+        # fast one if the slow conversion path is unavailable.
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.hf_id, trust_remote_code=True, use_fast=False
+            )
+        except Exception:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.hf_id, trust_remote_code=True
+            )
         self.model = AutoModel.from_pretrained(
             self.hf_id,
             torch_dtype=self.dtype,
