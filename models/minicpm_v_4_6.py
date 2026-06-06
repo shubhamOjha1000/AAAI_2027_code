@@ -1,9 +1,11 @@
-"""SmolVLM2-2.2B-Instruct adapter."""
-import time
+"""MiniCPM-V-4.6 (1.3B) adapter.
 
+Uses the modern transformers API (AutoModelForImageTextToText + apply_chat_template
+with `downsample_mode`). Requires transformers>=5.7.0.
+"""
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText, TextIteratorStreamer
+from transformers import AutoModelForImageTextToText, AutoProcessor, TextIteratorStreamer
 
 from .base import BaseVLMRunner
 from ..metrics.efficiency import (
@@ -14,19 +16,23 @@ from ..metrics.efficiency import (
     run_generation_with_streamer,
 )
 
+# "16x" merges visual tokens for efficiency (default); "4x" keeps 4x more for detail.
+DOWNSAMPLE_MODE = "16x"
+# Max slices when splitting a high-res image. Card recommends 36 for images; 9 is the
+# default and keeps the visual-token count / VRAM lower on a T4.
+MAX_SLICE_NUMS = 9
 
-class SmolVLM2Runner(BaseVLMRunner):
-    name = "smolvlm2"
+
+class MiniCPMV46Runner(BaseVLMRunner):
+    name = "minicpm_v_4_6"
 
     def load(self) -> None:
         self.processor = AutoProcessor.from_pretrained(self.hf_id)
         self.tokenizer = self.processor.tokenizer
         self.model = AutoModelForImageTextToText.from_pretrained(
             self.hf_id,
-            torch_dtype=self.dtype,
             attn_implementation="eager",
-            low_cpu_mem_usage=True,
-            device_map=self.device,  # stream weights straight to GPU; avoids CPU-RAM spike
+            **self._hf_load_kwargs(),
         ).eval()
 
     def _prep_inputs(self, image: Image.Image, question: str):
@@ -39,18 +45,17 @@ class SmolVLM2Runner(BaseVLMRunner):
         }]
         inputs = self.processor.apply_chat_template(
             messages,
-            add_generation_prompt=True,
             tokenize=True,
+            add_generation_prompt=True,
             return_dict=True,
             return_tensors="pt",
-        ).to(self.device, dtype=self.dtype)
+            downsample_mode=DOWNSAMPLE_MODE,
+            max_slice_nums=MAX_SLICE_NUMS,
+        ).to(self.model.device)
         return inputs
 
     def _count_visual_tokens(self, input_ids: torch.Tensor) -> int:
-        img_id = getattr(self.processor.tokenizer, "image_token_id", None)
-        if img_id is None:
-            tok = self.processor.tokenizer.convert_tokens_to_ids("<image>")
-            img_id = tok if tok != self.processor.tokenizer.unk_token_id else None
+        img_id = getattr(self.tokenizer, "image_token_id", None)
         if img_id is None:
             return -1
         return int((input_ids == img_id).sum().item())
@@ -58,11 +63,11 @@ class SmolVLM2Runner(BaseVLMRunner):
     def infer(self, image: Image.Image, question: str, max_new_tokens: int) -> GenerationMetrics:
         reset_vram_peak()
         inputs = self._prep_inputs(image, question)
-        prompt_len = inputs["input_ids"].shape[1]
 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300)
         gen_kwargs = dict(
             **inputs,
+            downsample_mode=DOWNSAMPLE_MODE,  # must mirror apply_chat_template
             max_new_tokens=max_new_tokens,
             do_sample=False,
         )

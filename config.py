@@ -31,11 +31,68 @@ MAX_NEW_TOKENS = 256
 DO_SAMPLE = False
 
 # Model registry. Keys are the names used by run_model("<key>").
+# "runner" selects the adapter class in runners/run_inference.py. "load_in_4bit"
+# (optional) routes the model through bitsandbytes 4-bit for T4-sized memory.
 MODEL_REGISTRY = {
+    # --- SmolVLM / SmolVLM2 family (Idefics3) ---
+    "smolvlm_256m": {
+        "hf_id": "HuggingFaceTB/SmolVLM-256M-Instruct",
+        "display_name": "SmolVLM-256M",
+        "dtype": "float16",
+        "runner": "smolvlm",
+    },
+    "smolvlm_500m": {
+        "hf_id": "HuggingFaceTB/SmolVLM-500M-Instruct",
+        "display_name": "SmolVLM-500M",
+        "dtype": "float16",
+        "runner": "smolvlm",
+    },
+    "smolvlm": {
+        "hf_id": "HuggingFaceTB/SmolVLM-Instruct",
+        "display_name": "SmolVLM (2.2B)",
+        "dtype": "float16",
+        "runner": "smolvlm",
+    },
     "smolvlm2": {
         "hf_id": "HuggingFaceTB/SmolVLM2-2.2B-Instruct",
         "display_name": "SmolVLM2 (2.2B)",
         "dtype": "float16",
+        "runner": "smolvlm",
+    },
+    # --- MiniCPM-V 4.6 (modern apply_chat_template API; needs transformers>=5.7) ---
+    "minicpm_v_4_6": {
+        "hf_id": "openbmb/MiniCPM-V-4.6",
+        "display_name": "MiniCPM-V 4.6 (1.3B)",
+        "dtype": "float16",
+        "runner": "minicpm_v_4_6",
+    },
+    # --- InternVL2.5 ---
+    "internvl2_5_1b": {
+        "hf_id": "OpenGVLab/InternVL2_5-1B",
+        "display_name": "InternVL2.5-1B",
+        "dtype": "float16",
+        "runner": "internvl2_5",
+    },
+    "internvl2_5_2b": {
+        "hf_id": "OpenGVLab/InternVL2_5-2B",
+        "display_name": "InternVL2.5-2B",
+        "dtype": "float16",
+        "runner": "internvl2_5",
+    },
+    # --- LLaVA-NeXT (v1.6); 7B/13B decoders loaded in 4-bit for the T4 ---
+    "llava_next_mistral_7b": {
+        "hf_id": "llava-hf/llava-v1.6-mistral-7b-hf",
+        "display_name": "LLaVA-1.6 Mistral-7B",
+        "dtype": "float16",
+        "runner": "llava_next",
+        "load_in_4bit": True,
+    },
+    "llava_next_vicuna_13b": {
+        "hf_id": "llava-hf/llava-v1.6-vicuna-13b-hf",
+        "display_name": "LLaVA-1.6 Vicuna-13B",
+        "dtype": "float16",
+        "runner": "llava_next",
+        "load_in_4bit": True,
     },
 }
 

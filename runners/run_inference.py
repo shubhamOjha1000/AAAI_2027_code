@@ -14,12 +14,25 @@ from ..models.base import BaseVLMRunner
 
 def _make_runner(model_name: str) -> BaseVLMRunner:
     entry = config.MODEL_REGISTRY[model_name]
-    hf_id = entry["hf_id"]
-    dtype = entry["dtype"]
-    if model_name == "smolvlm2":
-        from ..models.smolvlm2 import SmolVLM2Runner
-        return SmolVLM2Runner(hf_id=hf_id, dtype=dtype)
-    raise KeyError(f"Unknown model: {model_name}")
+    runner = entry.get("runner", model_name)
+    common = dict(
+        hf_id=entry["hf_id"],
+        dtype=entry["dtype"],
+        load_in_4bit=entry.get("load_in_4bit", False),
+    )
+    if runner == "smolvlm":
+        from ..models.smolvlm import SmolVLMRunner
+        return SmolVLMRunner(**common)
+    if runner == "minicpm_v_4_6":
+        from ..models.minicpm_v_4_6 import MiniCPMV46Runner
+        return MiniCPMV46Runner(**common)
+    if runner == "internvl2_5":
+        from ..models.internvl2_5 import InternVL25Runner
+        return InternVL25Runner(**common)
+    if runner == "llava_next":
+        from ..models.llava_next import LlavaNextRunner
+        return LlavaNextRunner(**common)
+    raise KeyError(f"Unknown runner: {runner} (model {model_name})")
 
 
 def run_model(
