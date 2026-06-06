@@ -33,11 +33,13 @@ JUDGE_USER_TEMPLATE = (
 )
 
 
-class QwenJudge:
+class LLMJudge:
+    """Generic text-only LLM-as-judge (works for any chat AutoModelForCausalLM:
+    Qwen2.5, Llama-3.3, etc.)."""
     def __init__(
         self,
-        model_id: str = config.JUDGE_MODEL_ID,
-        load_in_4bit: bool = config.JUDGE_LOAD_IN_4BIT,
+        model_id: str,
+        load_in_4bit: bool = False,
         device: str = "cuda",
     ):
         self.model_id = model_id

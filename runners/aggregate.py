@@ -1,4 +1,10 @@
-"""Aggregate prediction + judgment JSONLs into the paper-style breakdown reports."""
+"""Aggregate predictions + multi-judge judgments into paper-style breakdown reports.
+
+With a judge ensemble, each judge writes judgments/<judge_key>.jsonl. We report:
+  - judge_accuracy.csv : overall accuracy per (model, judge) + a majority_vote row.
+  - the detailed breakdowns (domain / question type / quality / hi-vs-lo / overall)
+    computed on the MAJORITY-VOTE consensus correctness (one verdict per sample).
+"""
 from pathlib import Path
 from typing import Optional
 
@@ -15,40 +21,64 @@ from ..metrics.accuracy import (
 from ..utils.io import ensure_dir, read_jsonl
 
 
-def _join_predictions_and_judgments(predictions_dir: Path, judgments_path: Path) -> pd.DataFrame:
-    judgments = list(read_jsonl(judgments_path))
-    jdf = pd.DataFrame(judgments)
-
-    pred_rows = []
+def _load_predictions(predictions_dir: Path) -> pd.DataFrame:
+    rows = []
     for pf in sorted(Path(predictions_dir).glob("*.jsonl")):
-        for r in read_jsonl(pf):
-            pred_rows.append(r)
-    pdf = pd.DataFrame(pred_rows)
+        rows.extend(read_jsonl(pf))
+    return pd.DataFrame(rows)
 
-    merged = pdf.merge(jdf, on=["model", "sample_id"], how="inner", suffixes=("", "_j"))
-    return merged
+
+def _load_judgments(judgments_dir: Path) -> pd.DataFrame:
+    """One row per (model, sample_id, judge). judge key = the 'judge' field or filename."""
+    rows = []
+    for jf in sorted(Path(judgments_dir).glob("*.jsonl")):
+        for r in read_jsonl(jf):
+            rows.append({
+                "model": r["model"],
+                "sample_id": r["sample_id"],
+                "judge": r.get("judge", jf.stem),
+                "correct": bool(r["correct"]),
+            })
+    return pd.DataFrame(rows)
 
 
 def build_reports(
     predictions_dir: Optional[Path] = None,
-    judgments_path: Optional[Path] = None,
+    judgments_dir: Optional[Path] = None,
     reports_dir: Optional[Path] = None,
 ) -> Path:
     predictions_dir = Path(predictions_dir or config.PREDICTIONS_DIR)
-    judgments_path = Path(judgments_path or (config.JUDGMENTS_DIR / "qwen_judge.jsonl"))
+    judgments_dir = Path(judgments_dir or config.JUDGMENTS_DIR)
     reports_dir = Path(reports_dir or config.REPORTS_DIR)
     ensure_dir(reports_dir)
 
-    merged = _join_predictions_and_judgments(predictions_dir, judgments_path)
+    pdf = _load_predictions(predictions_dir)
+    jdf = _load_judgments(judgments_dir)
+
+    # --- per-judge overall accuracy ---
+    per_judge = (jdf.groupby(["model", "judge"])
+                    .agg(n=("correct", "size"), correct=("correct", "sum")).reset_index())
+    per_judge["accuracy_pct"] = 100.0 * per_judge["correct"] / per_judge["n"]
+
+    # --- majority-vote consensus per (model, sample_id): correct if >= half agree ---
+    cons = jdf.groupby(["model", "sample_id"])["correct"].mean().reset_index()
+    cons["correct"] = cons["correct"] >= 0.5
+    maj = (cons.groupby("model")
+              .agg(n=("correct", "size"), correct=("correct", "sum")).reset_index())
+    maj["accuracy_pct"] = 100.0 * maj["correct"] / maj["n"]
+    maj.insert(1, "judge", "majority_vote")
+
+    judge_accuracy = (pd.concat([per_judge, maj], ignore_index=True)
+                        .sort_values(["model", "judge"]).reset_index(drop=True))
+    judge_accuracy.to_csv(reports_dir / "judge_accuracy.csv", index=False)
+
+    # --- detailed breakdowns use the consensus correctness ---
+    merged = pdf.merge(cons[["model", "sample_id", "correct"]],
+                       on=["model", "sample_id"], how="inner")
     merged.to_csv(reports_dir / "joined_full.csv", index=False)
 
-    overall_rows = []
-    eff_rows = []
-    domain_dfs = []
-    qtype_dfs = []
-    quality_dfs = []
-    hi_lo_dfs = []
-
+    overall_rows, eff_rows = [], []
+    domain_dfs, qtype_dfs, quality_dfs, hi_lo_dfs = [], [], [], []
     for model_name, df in merged.groupby("model"):
         recs = df.to_dict(orient="records")
 
@@ -60,13 +90,10 @@ def build_reports(
         eff["model"] = model_name
         eff_rows.append(eff)
 
-        d = accuracy_by_field(recs, "domain")
-        d.insert(0, "model", model_name)
-        domain_dfs.append(d)
-
-        q = accuracy_by_field(recs, "question_type")
-        q.insert(0, "model", model_name)
-        qtype_dfs.append(q)
+        for dfs, field in ((domain_dfs, "domain"), (qtype_dfs, "question_type")):
+            t = accuracy_by_field(recs, field)
+            t.insert(0, "model", model_name)
+            dfs.append(t)
 
         ql = accuracy_by_quality(recs)
         ql.insert(0, "model", model_name)
@@ -91,15 +118,14 @@ def build_reports(
     pd.concat(hi_lo_dfs, ignore_index=True).to_csv(reports_dir / "hi_vs_lo_quality.csv", index=False)
 
     md_lines = ["# WearVQA Benchmark Summary", ""]
-    md_lines.append("## Overall accuracy")
+    md_lines.append("## Overall accuracy (majority-vote consensus)")
     md_lines.append(overall_df.to_markdown(index=False))
     md_lines.append("")
-    md_lines.append("## Efficiency summary (per-sample means)")
-    md_lines.append(eff_df.to_markdown(index=False))
+    md_lines.append("## Per-judge accuracy")
+    md_lines.append(judge_accuracy.to_markdown(index=False))
     md_lines.append("")
-    md_lines.append("## High vs low quality images")
+    md_lines.append("## High vs low quality images (consensus)")
     md_lines.append(pd.concat(hi_lo_dfs, ignore_index=True).to_markdown(index=False))
-    summary_md = reports_dir / "summary_table.md"
-    summary_md.write_text("\n".join(md_lines), encoding="utf-8")
+    (reports_dir / "summary_table.md").write_text("\n".join(md_lines), encoding="utf-8")
     print(f"[aggregate] reports written under {reports_dir}")
     return reports_dir

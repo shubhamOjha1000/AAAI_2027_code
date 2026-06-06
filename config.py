@@ -96,9 +96,14 @@ MODEL_REGISTRY = {
     },
 }
 
-# LLM-as-judge config. Full fp16 (fits an A100); set to True to 4-bit on smaller GPUs.
-JUDGE_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
-JUDGE_LOAD_IN_4BIT = False
+# LLM-as-judge ensemble. Each judge runs sequentially (load -> score -> unload);
+# the report shows per-judge accuracy plus a majority-vote consensus.
+# Sizes target an A100 80GB: 32B fits fp16; 70B/72B use 4-bit.
+JUDGE_REGISTRY = {
+    "qwen2_5_72b": {"model_id": "Qwen/Qwen2.5-72B-Instruct", "load_in_4bit": True},
+    "qwen2_5_32b": {"model_id": "Qwen/Qwen2.5-32B-Instruct", "load_in_4bit": False},
+    "llama3_3_70b": {"model_id": "meta-llama/Llama-3.3-70B-Instruct", "load_in_4bit": True},
+}
 JUDGE_MAX_NEW_TOKENS = 256
 JUDGE_BATCH_SIZE = 1
 
