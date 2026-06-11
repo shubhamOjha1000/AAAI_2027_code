@@ -305,6 +305,75 @@ class SmolVLMImageProcessor(TorchvisionBackend):
 
         return frames, num_splits_h, num_splits_w
 
+    def visualize_partitions(self, image, save_path=None, **preprocess_kwargs):
+        """Visualize how this processor partitions an image.
+
+        Renders, in one figure: the ORIGINAL image, every split tile arranged in its
+        ``rows x cols`` grid, and the appended GLOBAL (downsampled) image. Pass the same
+        kwargs you would give the processor (e.g. ``max_image_size=...``) to explore how
+        the partitioning changes. Returns ``{"rows", "cols", "num_partitions"}``.
+        """
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from matplotlib.gridspec import GridSpec
+
+        out = self.preprocess(
+            [image], return_tensors="pt", do_normalize=False,
+            return_row_col_info=True, **preprocess_kwargs,
+        )
+        pv = out["pixel_values"][0].float().cpu()        # (P, C, H, W) in [0, 1]
+
+        def _scalar(v):
+            while isinstance(v, (list, tuple)):
+                v = v[0]
+            return int(v)
+
+        n_rows, n_cols = _scalar(out["rows"][0]), _scalar(out["cols"][0])
+        num_partitions = pv.shape[0]
+        to_np = lambda t: (t.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype("uint8")
+
+        split = n_rows > 0 and n_cols > 0
+        global_img = to_np(pv[-1])                        # global is always the last partition
+        cell = 2.6
+        ncol_grid = (n_cols if split else 1) + 2          # [ original | tiles... | global ]
+        nrow_grid = max(n_rows, 1)
+
+        fig = plt.figure(figsize=(ncol_grid * cell, nrow_grid * cell))
+        gs = GridSpec(nrow_grid, ncol_grid, figure=fig)
+
+        ax = fig.add_subplot(gs[:, 0])
+        ax.imshow(np.array(image.convert("RGB")))
+        ax.set_title(f"Original\n{image.size[0]}x{image.size[1]}", fontsize=9)
+        ax.axis("off")
+
+        if split:
+            for r in range(n_rows):
+                for c in range(n_cols):
+                    a = fig.add_subplot(gs[r, c + 1])
+                    a.imshow(to_np(pv[r * n_cols + c]))
+                    a.set_title(f"tile r{r}c{c}", fontsize=8)
+                    a.axis("off")
+        else:
+            a = fig.add_subplot(gs[:, 1])
+            a.text(0.5, 0.5, "no split\n(image <= max_image_size)", ha="center", va="center", fontsize=9)
+            a.axis("off")
+
+        ax = fig.add_subplot(gs[:, ncol_grid - 1])
+        ax.imshow(global_img)
+        ax.set_title(f"Global / downsampled\n{global_img.shape[1]}x{global_img.shape[0]}", fontsize=9)
+        ax.axis("off")
+
+        fig.suptitle(
+            f"SmolVLM partitions: {n_rows}x{n_cols} tiles + 1 global = {num_partitions} partitions",
+            fontsize=11,
+        )
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path, dpi=130, bbox_inches="tight")
+            print("saved ->", save_path)
+        plt.show()
+        return {"rows": n_rows, "cols": n_cols, "num_partitions": num_partitions}
+
     def resize_for_vision_encoder(
         self,
         image: torch.Tensor,
