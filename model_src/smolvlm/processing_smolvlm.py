@@ -82,6 +82,29 @@ def _prompt_single_image(image_seq_len, fake_token_around_image, image_token, gl
     )
 
 
+def _prompt_focus_image(
+    image_seq_len, focus_row, focus_col, fake_token_around_image, image_token, global_image_token
+):
+    """ROI-foveated prompt: ONE tile (kept at its ORIGINAL row/col label) + the global image.
+
+    Mirrors `_prompt_split_image` but emits a single tile, so it pairs with pixel_values
+    that contain exactly [ROI tile, global] (2 partitions).
+    """
+    text_split_images = (
+        f"{fake_token_around_image}"
+        + f"<row_{focus_row + 1}_col_{focus_col + 1}>"
+        + f"{image_token}" * image_seq_len
+        + "\n"
+    )
+    text_split_images += (
+        f"\n{fake_token_around_image}"
+        + f"{global_image_token}"
+        + f"{image_token}" * image_seq_len
+        + f"{fake_token_around_image}"
+    )
+    return text_split_images
+
+
 def get_image_prompt_string(
     image_rows, image_cols, image_seq_len, fake_token_around_image, image_token, global_image_token
 ):
@@ -172,6 +195,85 @@ class SmolVLMProcessor(ProcessorMixin):
             prompt_strings.append(sample)
 
         return prompt_strings
+
+    def process_with_focus(self, text, images, focus_point, return_tensors="pt", **images_kwargs):
+        """ROI-foveated processing (single image, single ROI) — processor-level pruning.
+
+        Keeps only the tile that contains ``focus_point`` plus the global downsampled
+        image, dropping every other tile *before* the vision encoder. The kept tile keeps
+        its ORIGINAL ``<row_r_col_c>`` label so the model knows where it sat.
+
+        Args:
+            text (str | list[str]): one prompt containing a single ``<image>`` token.
+            images: a single image (PIL / path / url).
+            focus_point (tuple): normalized ``(x, y)`` in ``[0, 1]``, origin top-left,
+                ``x`` = horizontal, ``y`` = vertical.
+
+        Returns:
+            (BatchFeature, info) where ``info`` describes the kept tile / partition counts.
+        """
+        if isinstance(text, str):
+            text = [text]
+        if len(text) != 1:
+            raise ValueError("process_with_focus supports a single prompt.")
+
+        images = self.image_processor.fetch_images(images)
+        images = make_nested_list_of_images(images)  # -> [[image]]
+        if len(images) != 1 or len(images[0]) != 1:
+            raise ValueError("process_with_focus supports exactly one image.")
+
+        images_kwargs.setdefault("return_row_col_info", True)
+        vision = self.image_processor(images, return_tensors="pt", **images_kwargs)
+        pixel_values = vision["pixel_values"]  # (1, P, C, H, W)
+        pixel_attention_mask = vision["pixel_attention_mask"] if "pixel_attention_mask" in vision else None
+        rows = vision.pop("rows", [[0]])
+        cols = vision.pop("cols", [[0]])
+
+        def _scalar(v):
+            while isinstance(v, (list, tuple)):
+                v = v[0]
+            return int(v)
+
+        n_rows, n_cols = _scalar(rows), _scalar(cols)
+        n_partitions = pixel_values.shape[1]
+        x, y = float(focus_point[0]), float(focus_point[1])
+
+        if n_rows > 0 and n_cols > 0:
+            focus_row = min(max(int(y * n_rows), 0), n_rows - 1)
+            focus_col = min(max(int(x * n_cols), 0), n_cols - 1)
+            roi_index = focus_row * n_cols + focus_col          # row-major tile order
+            global_index = n_partitions - 1                     # global is always last
+            keep = [roi_index, global_index]
+            pixel_values = pixel_values[:, keep]
+            if pixel_attention_mask is not None:
+                pixel_attention_mask = pixel_attention_mask[:, keep]
+            block = _prompt_focus_image(
+                self.image_seq_len, focus_row, focus_col,
+                self.fake_image_token, self.image_token, self.global_image_token,
+            )
+            info = {
+                "focus_row": focus_row, "focus_col": focus_col, "roi_index": roi_index,
+                "grid_rows": n_rows, "grid_cols": n_cols,
+                "kept_partitions": int(pixel_values.shape[1]), "full_partitions": n_partitions,
+            }
+        else:
+            # image was not split: only the global image exists, ROI is a no-op
+            block = _prompt_single_image(
+                self.image_seq_len, self.fake_image_token, self.image_token, self.global_image_token,
+            )
+            info = {
+                "focus_row": None, "focus_col": None, "roi_index": None,
+                "grid_rows": n_rows, "grid_cols": n_cols,
+                "kept_partitions": int(pixel_values.shape[1]), "full_partitions": n_partitions,
+            }
+
+        expanded = [text[0].replace(self.image_token, block, 1)]
+        data = {"pixel_values": pixel_values}
+        if pixel_attention_mask is not None:
+            data["pixel_attention_mask"] = pixel_attention_mask
+        text_inputs = self.tokenizer(expanded, add_special_tokens=True, return_tensors=return_tensors)
+        data.update(text_inputs)
+        return BatchFeature(data, tensor_type=return_tensors), info
 
     def expand_text_with_video_tokens(self, text, video_inputs):
         num_frames = video_inputs["pixel_values"].shape[1]
