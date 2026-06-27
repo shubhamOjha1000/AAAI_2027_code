@@ -115,6 +115,59 @@ def get_image_prompt_string(
     )
 
 
+def gaze_to_tiles(gaze, image_size, R, C, n_img, tau: float = 0.15, neighbors: bool = True):
+    """Gaze-driven native tile selection (Stage 1 of foveated_tiling_spec.md).
+
+    Map a gaze point to the tile index it falls in and return the sub-images to
+    KEEP: that tile, optional straddle-neighbors when the gaze sits within ``tau``
+    of a tile boundary, plus the global thumbnail (always the LAST sub-image).
+
+    Args:
+        gaze: ``(gx, gy)``. Values in ``[0, 1]`` are treated as NORMALIZED
+            fractions; values ``> 1`` as absolute pixels. Off-screen / invalid
+            gaze -> global-only fallback ``[n_img - 1]``.
+        image_size: ``(W, H)`` of the frame the gaze refers to (used only to
+            normalize pixel-coordinate gaze).
+        R, C: tile grid (rows x cols) chosen by the processor.
+        n_img: number of sub-images = ``R * C + 1`` (tiles + 1 global).
+        tau: edge margin (fraction of a cell) for adding straddle-neighbors.
+        neighbors: if False, never add neighbors (gaze tile + global only).
+
+    Returns:
+        Sorted list of kept sub-image indices into ``pixel_values[0]``
+        (tiles are row-major ``0 .. R*C-1``; global is ``n_img - 1``).
+    """
+    W, H = image_size
+    gx, gy = float(gaze[0]), float(gaze[1])
+    # Normalized [0,1] -> use as-is; otherwise treat as pixels and normalize.
+    if 0.0 <= gx <= 1.0 and 0.0 <= gy <= 1.0:
+        fx, fy = gx, gy
+    else:
+        fx = gx / W if W else gx
+        fy = gy / H if H else gy
+
+    global_idx = n_img - 1
+    # Off-screen / invalid gaze -> global-only fallback.
+    if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
+        return [global_idx]
+
+    col = min(int(fx * C), C - 1)
+    row = min(int(fy * R), R - 1)
+    gaze_tile = row * C + col
+    keep = {gaze_tile}
+
+    if neighbors:
+        in_col = fx * C - col          # position within the cell, x (0..1)
+        in_row = fy * R - row          # position within the cell, y (0..1)
+        if in_col < tau and col > 0:           keep.add(row * C + col - 1)   # left
+        if in_col > 1 - tau and col < C - 1:   keep.add(row * C + col + 1)   # right
+        if in_row < tau and row > 0:           keep.add((row - 1) * C + col) # top
+        if in_row > 1 - tau and row < R - 1:   keep.add((row + 1) * C + col) # bottom
+
+    keep.add(global_idx)
+    return sorted(keep)
+
+
 class SmolVLMProcessorKwargs(ProcessingKwargs, total=False):
     _defaults = {
         "text_kwargs": {
@@ -192,6 +245,117 @@ class SmolVLMProcessor(ProcessorMixin):
             prompt_strings.append(sample)
 
         return prompt_strings
+
+    # ------------------------------------------------------------------ #
+    #  Gaze-driven foveated tiling (native tile selection)                #
+    #  See foveated_tiling_spec.md. Training-free; in-distribution.       #
+    # ------------------------------------------------------------------ #
+    def gaze_to_keep(self, gaze, image_size, R, C, n_img, tau: float = 0.15, neighbors: bool = True):
+        """Stage 1 wrapper: gaze -> kept sub-image indices (see ``gaze_to_tiles``)."""
+        return gaze_to_tiles(gaze, image_size, R, C, n_img, tau=tau, neighbors=neighbors)
+
+    def _build_foveated_text(self, text, keep, R, C, n_img):
+        """Stage 2 (text side): rebuild the image-prompt with ONLY the kept tiles.
+
+        Each kept tile keeps its real ``<row_r_col_c>`` tag (in-distribution); the
+        global block is always appended last. The dropped tiles' token blocks are
+        removed so ``count(<image>) == len(keep) * image_seq_len``.
+        """
+        global_idx = n_img - 1
+        tiles = [k for k in keep if k != global_idx]
+        seq = self.image_seq_len
+        img, fake, glob = self.image_token, self.fake_image_token, self.global_image_token
+
+        block = ""
+        last_row = None
+        for t in tiles:
+            r, c = t // C, t % C
+            if last_row is not None and r != last_row:
+                block += "\n"
+            block += f"{fake}<row_{r + 1}_col_{c + 1}>" + img * seq
+            last_row = r
+
+        if tiles:
+            block += f"\n\n{fake}{glob}" + img * seq + f"{fake}"
+        else:  # global-only (no tiles kept) -> single-image prompt format
+            block += f"{fake}{glob}" + img * seq + f"{fake}"
+
+        split_sample = text.split(img)
+        if len(split_sample) < 2:
+            raise ValueError("The image token should be present in the text.")
+        # One <image> placeholder -> two parts; join defensively if more.
+        return split_sample[0] + block + img.join(split_sample[1:])
+
+    def build_foveated_inputs(
+        self, image, text, gaze, tau: float = 0.15, neighbors: bool = True,
+        return_tensors: str = "pt", verbose: bool = False,
+    ):
+        """Build foveated model inputs for one ``(image, prompt, gaze)``.
+
+        Implements Stages 1-2 of foveated_tiling_spec.md with **native tile
+        selection**: run the standard tiling, then keep only the gaze tile(s) +
+        global and DROP the rest from BOTH ``pixel_values`` and ``input_ids`` (real
+        compute / KV-cache savings — not masking). Stage 3 (encode/decode) is the
+        stock ``model.generate(**inputs)``.
+
+        Args:
+            image: a single PIL image / array / path.
+            text:  prompt containing exactly one ``<image>`` placeholder
+                   (e.g. from ``apply_chat_template``).
+            gaze:  ``(gx, gy)`` normalized ([0,1]) or pixels (>1); off-screen ->
+                   global-only fallback.
+            tau / neighbors: straddle-neighbor controls (see ``gaze_to_tiles``).
+
+        Returns:
+            ``dict`` with ``pixel_values``, ``input_ids``, ``attention_mask``
+            (and ``pixel_attention_mask`` if padded), plus ``keep``, ``grid``
+            ``(R, C)`` and ``n_partitions`` metadata.
+        """
+        images = make_nested_list_of_images(self.image_processor.fetch_images([image]))
+        pil = images[0][0]
+        size = getattr(pil, "size", None)        # PIL: (W, H); used only for pixel gaze
+        W, H = size if size is not None else (None, None)
+
+        vision = self.image_processor(images, return_row_col_info=True, return_tensors=return_tensors)
+        pixel_values = vision["pixel_values"]    # [1, N_img, 3, h, w]
+        n_img = pixel_values.shape[1]
+        R = int(vision["rows"][0][0])
+        C = int(vision["cols"][0][0])
+
+        if R == 0 or C == 0:
+            # Image was not split -> only the global image exists; nothing to drop.
+            keep = [n_img - 1]
+        else:
+            keep = gaze_to_tiles(gaze, (W, H), R, C, n_img, tau=tau, neighbors=neighbors)
+
+        pixel_values_fov = pixel_values[:, keep]
+        fov_text = self._build_foveated_text(text, keep, R, C, n_img)
+        tok = self.tokenizer(fov_text, return_tensors=return_tensors)
+
+        data = {
+            "pixel_values": pixel_values_fov,
+            "input_ids": tok["input_ids"],
+            "attention_mask": tok["attention_mask"],
+        }
+        if "pixel_attention_mask" in vision:
+            data["pixel_attention_mask"] = vision["pixel_attention_mask"][:, keep]
+
+        # THE INVARIANT (crash point): <image> count must match kept sub-images.
+        try:
+            n_img_tok = int((tok["input_ids"] == self.image_token_id).sum())
+            expected = len(keep) * self.image_seq_len
+            assert n_img_tok == expected, (
+                f"foveation invariant broken: {n_img_tok} <image> tokens != {expected}"
+            )
+        except TypeError:
+            pass  # non-tensor return_tensors; skip the tensor-only check
+
+        if verbose:
+            print(f"[foveate] grid={R}x{C}  N_img={n_img}  keep={keep}  "
+                  f"({len(keep)} partitions, {len(keep) * self.image_seq_len} visual tokens; "
+                  f"full={n_img * self.image_seq_len})")
+
+        return {"keep": keep, "grid": (R, C), "n_partitions": len(keep), **data}
 
     def expand_text_with_video_tokens(self, text, video_inputs):
         num_frames = video_inputs["pixel_values"].shape[1]
@@ -373,4 +537,45 @@ class SmolVLMProcessor(ProcessorMixin):
         return super().apply_chat_template(conversation, chat_template, processor_kwargs=processor_kwargs, **kwargs)
 
 
-__all__ = ["SmolVLMProcessor"]
+def run_foveated_tiling_tests():
+    """Model-free tests for the foveated-tiling geometry (Stage 1).
+
+    Validates ``gaze_to_tiles`` only (no torch / no model load), so it can run
+    anywhere. The text-builder / invariant (Stage 2) is checked end-to-end in
+    ``build_foveated_inputs`` via the ``assert`` on the ``<image>`` count.
+    """
+    print("\n" + "=" * 60)
+    print("Running foveated-tiling geometry tests")
+    print("=" * 60)
+
+    R, C = 4, 3
+    n_img = R * C + 1          # 13; global index = 12
+
+    def chk(name, got, exp):
+        assert got == exp, f"{name} FAIL: got {got}, expected {exp}"
+        print(f"  {name} PASS  {got}")
+
+    # interior gaze -> single tile + global
+    chk("T1 interior",    gaze_to_tiles((0.5, 0.6), (1080, 1920), R, C, n_img), [7, 12])
+    # gaze on a horizontal boundary (y=0.5) -> straddle adds the top neighbor
+    chk("T2 boundary",    gaze_to_tiles((0.5, 0.5), (1080, 1920), R, C, n_img), [4, 7, 12])
+    # top-left corner -> tile 0 + global (neighbors clamped away)
+    chk("T3 corner",      gaze_to_tiles((0.0, 0.0), (1000, 1000), R, C, n_img), [0, 12])
+    # near a vertical boundary (interior y) -> gaze tile + left neighbor + global
+    chk("T4 left-neigh",  gaze_to_tiles((0.34, 0.6), (1000, 1000), R, C, n_img), [6, 7, 12])
+    # pixel-coordinate gaze normalizes to the same as its fraction
+    chk("T5 pixels",      gaze_to_tiles((540, 1152), (1080, 1920), R, C, n_img),
+                          gaze_to_tiles((0.5, 0.6), (1080, 1920), R, C, n_img))
+    # off-screen / negative -> global-only fallback
+    chk("T6 offscreen",   gaze_to_tiles((2000, 960), (1080, 1920), R, C, n_img), [12])
+    chk("T7 negative",    gaze_to_tiles((-0.1, 0.5), (1080, 1920), R, C, n_img), [12])
+    # neighbors disabled -> exactly gaze tile + global
+    chk("T8 no-neighbors", gaze_to_tiles((0.34, 0.6), (1000, 1000), R, C, n_img, neighbors=False), [7, 12])
+    # bottom-right -> last tile + global
+    chk("T9 bottom-right", gaze_to_tiles((0.99, 0.99), (1000, 1000), R, C, n_img), [11, 12])
+
+    print("\nAll foveated-tiling geometry tests PASSED")
+    print("=" * 60)
+
+
+__all__ = ["SmolVLMProcessor", "gaze_to_tiles", "run_foveated_tiling_tests"]

@@ -34,6 +34,13 @@ parser.add_argument("--show-partitions", action="store_true",
                     help="Display the two focus partitions (local crop + global) as images")
 parser.add_argument("--attn-vis",    action="store_true",
                     help="Visualize decoder attention: focus crop vs global partition (saves /content/attn_partition_comparison.png)")
+parser.add_argument("--gaze",        default=None,
+                    help="Gaze point x,y for native foveated tiling (normalized [0,1] or pixels). "
+                         "When set, runs the foveated-tiling step (keep gaze tile(s)+global, drop the rest).")
+parser.add_argument("--fov-tau",     default=0.15, type=float,
+                    help="Foveated tiling edge margin for straddle-neighbors (default: 0.15)")
+parser.add_argument("--fov-no-neighbors", action="store_true",
+                    help="Foveated tiling: keep ONLY the gaze tile + global (no straddle-neighbors)")
 args = parser.parse_args()
 
 # ── Step 1: Find where transformers is installed ──────────────────────────────
@@ -81,6 +88,10 @@ print("\n[setup] Modules reloaded. Your custom code is now active.\n")
 # ── Step 3b: Run focus-partitioning tests ─────────────────────────────────────
 from transformers.models.smolvlm.image_processing_smolvlm import run_focus_partitioning_tests
 run_focus_partitioning_tests()
+
+# ── Step 3c: Run foveated-tiling geometry tests (native tile selection) ────────
+from transformers.models.smolvlm.processing_smolvlm import run_foveated_tiling_tests
+run_foveated_tiling_tests()
 
 # ── Step 4: Load model & processor ───────────────────────────────────────────
 import torch
@@ -380,3 +391,28 @@ if args.focus_only:
     run_eval("Focus-point [focus-only]", fo_inputs)
 else:
     run_eval("Focus-point [focus+global]", full_focus_inputs)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  STEP 7 — Foveated tiling (NATIVE tile selection: gaze tile(s) + global)
+#           See foveated_tiling_spec.md. Keeps the model's OWN tiles
+#           (in-distribution, training-free) and DROPS the peripheral ones.
+# ══════════════════════════════════════════════════════════════════════════════
+if args.gaze is not None:
+    GAZE_POINT = tuple(float(v) for v in args.gaze.split(","))
+    print("\n" + "─"*60)
+    print(f"  FOVEATED TILING  (gaze={GAZE_POINT}, "
+          f"neighbors={not args.fov_no_neighbors})")
+    print("─"*60)
+
+    fov = processor.build_foveated_inputs(
+        image, prompt_text, GAZE_POINT,
+        tau=args.fov_tau, neighbors=not args.fov_no_neighbors, verbose=True,
+    )
+    R, C = fov["grid"]
+    print(f"[foveate] grid={R}x{C}  full partitions={R*C + 1}  "
+          f"kept={fov['n_partitions']}  keep_idx={fov['keep']}")
+
+    fov_inputs = {k: v.to(DEVICE) for k, v in fov.items()
+                  if k not in ("keep", "grid", "n_partitions")}
+    run_eval(f"Foveated [keep {fov['keep']}]", fov_inputs)
