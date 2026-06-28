@@ -15,15 +15,29 @@ question embeddings.
 Label: **DETAIL** iff global-only (B) is **wrong** and gaze-fovea (C) is **right**;
 else **GIST**. (29 DETAIL / 271 GIST.)
 
+## Feature modes (Lever 2 — image-aware router)
+The question-only router failed partly because **detail-need is image-dependent**
+(the same question is GIST on one frame, DETAIL on another). `FEATURE_MODE`
+(env var) selects the router input so we can test this directly:
+- `text` — question embedding only (original pilot, PR-AUC 0.207)
+- `visual` — pooled CLIP image features only (global frame + gaze-crop)
+- `text+visual` — both (the image-aware router)
+
+If `text+visual` lifts PR-AUC above 0.207, detail-need is confirmed image-dependent.
+
 ## Pipeline (run in order)
 ```bash
 python build_router_labels.py        # -> outputs/router_labels.jsonl
-python extract_question_features.py  # -> outputs/features.npy  (sentence-transformers, CPU)
-python splits.py                     # -> outputs/folds.json    (stratified+grouped 5-fold)
-python train_router.py               # -> outputs/oof_predictions.jsonl  (CV, balanced sampler)
-python eval_router.py                # -> outputs/metrics.json + outputs/pareto.png
+python extract_question_features.py  # -> outputs/features.npy        (question text, CPU)
+python extract_visual_features.py    # -> outputs/visual_features.npy (CLIP global+gaze-crop; needs Drive images)
+python splits.py                     # -> outputs/folds.json          (stratified+grouped 5-fold)
+# then per mode:
+FEATURE_MODE=text        python train_router.py && FEATURE_MODE=text        python eval_router.py
+FEATURE_MODE=visual      python train_router.py && FEATURE_MODE=visual      python eval_router.py
+FEATURE_MODE=text+visual python train_router.py && FEATURE_MODE=text+visual python eval_router.py
+# outputs are tagged per mode: metrics_<mode>.json, pareto_<mode>.png
 ```
-Or just run the notebook: `train_router_colab.ipynb`.
+Or just run the notebook `train_router_colab.ipynb` — it does all three modes and prints a comparison. Visual features read the WearVQA images from `DATASET_DIR` (default `/content/drive/MyDrive/wearvqa_gaze_only`).
 
 ## What it reports
 - **Router head:** DETAIL precision / recall / F1 / PR-AUC (out-of-fold; accuracy is

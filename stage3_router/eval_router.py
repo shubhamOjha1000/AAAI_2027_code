@@ -30,7 +30,7 @@ def _load():
     bt = np.array([r["B_tokens"] for r in rows], dtype=float)
     ct = np.array([r["C_tokens"] for r in rows], dtype=float)
     at = np.array([r["A_tokens"] for r in rows], dtype=float)
-    tau = json.load(open(C.OOF.replace("oof_predictions.jsonl", "router_meta.json")))["operating_tau"]
+    tau = json.load(open(C.ROUTER_META))["operating_tau"]
     return keys, qt, y, prob, ac, bc, cc, at, bt, ct, tau
 
 
@@ -42,7 +42,7 @@ def route_point(detail_mask, bc, cc, bt, ct):
 
 def main():
     keys, qt, y, prob, ac, bc, cc, at, bt, ct, tau = _load()
-    out = {}
+    out = {"feature_mode": C.FEATURE_MODE}
 
     # ---- (1) router classification on DETAIL ----
     pred = (prob > tau).astype(int)
@@ -108,7 +108,7 @@ def main():
             ax.annotate(name, (x, yv), textcoords="offset points", xytext=(6, 5), fontsize=9)
         ax.set_xlabel("mean visual tokens (lower = cheaper)")
         ax.set_ylabel("VQA accuracy (%)")
-        ax.set_title("Stage-3 router: accuracy vs tokens")
+        ax.set_title(f"Stage-3 router ({C.FEATURE_MODE}): accuracy vs tokens")
         ax.grid(alpha=0.3); ax.legend(loc="lower right", fontsize=8)
         fig.tight_layout(); fig.savefig(C.PARETO_PNG, dpi=140)
         print(f"saved {C.PARETO_PNG}")

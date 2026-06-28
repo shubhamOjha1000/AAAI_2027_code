@@ -23,8 +23,19 @@ from router_model import RouterMLP
 from router_dataset import make_loader
 
 
+def load_feature_matrix():
+    """Assemble the router input per FEATURE_MODE (text / visual / text+visual)."""
+    text = np.load(C.FEATURES)
+    if C.FEATURE_MODE == "text":
+        return text
+    vis = np.load(C.VISUAL_FEATURES)
+    if C.FEATURE_MODE == "visual":
+        return vis
+    return np.concatenate([text, vis], axis=1)   # text+visual
+
+
 def _load_aligned():
-    feats = np.load(C.FEATURES)
+    feats = load_feature_matrix()
     folds = json.load(open(C.FOLDS))
     feat_ids = folds["feat_ids"]
     fold = np.array(folds["fold"])
@@ -122,15 +133,16 @@ def main():
             fo.write(json.dumps({"key": k, "question_type": q,
                                  "label": "DETAIL" if yi == 1 else "GIST",
                                  "prob": float(pi)}) + "\n")
-    json.dump({"operating_tau": tau, "model": f"MLP(hidden={C.HIDDEN})",
-               "encoder": C.ENCODER, "seeds": C.SEEDS, "folds": C.N_FOLDS},
-              open(C.OOF.replace("oof_predictions.jsonl", "router_meta.json"), "w"), indent=2)
-    print(f"OOF probs -> {C.OOF}   operating_tau={tau:.3f}")
+    json.dump({"operating_tau": tau, "feature_mode": C.FEATURE_MODE,
+               "model": f"MLP(hidden={C.HIDDEN})", "encoder": C.ENCODER,
+               "seeds": C.SEEDS, "folds": C.N_FOLDS},
+              open(C.ROUTER_META, "w"), indent=2)
+    print(f"[{C.FEATURE_MODE}] OOF probs -> {C.OOF}   operating_tau={tau:.3f}")
 
     # reference: logistic-regression router (simplest head)
     _, _, _, prob_lr, tau_lr = run(hidden=0)
-    np.save(C.OOF.replace("oof_predictions.jsonl", "oof_prob_logreg.npy"), prob_lr)
-    print(f"LogReg OOF probs saved   operating_tau={tau_lr:.3f}")
+    np.save(C.OOF_LOGREG, prob_lr)
+    print(f"[{C.FEATURE_MODE}] LogReg OOF probs saved   operating_tau={tau_lr:.3f}")
 
 
 if __name__ == "__main__":

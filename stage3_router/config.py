@@ -2,6 +2,12 @@
 
 All paths are relative to this folder so the pipeline is self-contained and
 runs unchanged on Colab CPU after cloning the repo.
+
+FEATURE_MODE (env-overridable) selects the router input:
+  "text"        -> question embedding only            (the original pilot)
+  "visual"      -> pooled image features only          (global + gaze-crop CLIP)
+  "text+visual" -> concat of the two                   (Lever 2: image-aware router)
+Outputs are tagged by mode so the three runs don't clobber each other.
 """
 import os
 
@@ -14,18 +20,29 @@ os.makedirs(OUT_DIR, exist_ok=True)
 VERDICTS = os.path.join(DATA_DIR, "partition5_compare_verdicts.jsonl")   # per-(sample,algo) correctness
 RESPONSES = os.path.join(DATA_DIR, "partition5_compare_responses.jsonl")  # per-(sample,algo) n_partitions
 
-# ---- intermediate / outputs ----
+# ---- dataset on Drive (for visual features): <qtype>/<id>.{jpg,json} ----
+DATASET_DIR = os.environ.get("DATASET_DIR", "/content/drive/MyDrive/wearvqa_gaze_only")
+
+# ---- feature mode ----
+FEATURE_MODE = os.environ.get("FEATURE_MODE", "text+visual")   # text | visual | text+visual
+_TAG = FEATURE_MODE.replace("+", "_")
+
+# ---- mode-independent intermediates ----
 LABELS = os.path.join(OUT_DIR, "router_labels.jsonl")
-FEATURES = os.path.join(OUT_DIR, "features.npy")
+FEATURES = os.path.join(OUT_DIR, "features.npy")          # text (question) embeddings
 FEAT_IDS = os.path.join(OUT_DIR, "feature_ids.json")
+VISUAL_FEATURES = os.path.join(OUT_DIR, "visual_features.npy")  # pooled image embeddings
 FOLDS = os.path.join(OUT_DIR, "folds.json")
-OOF = os.path.join(OUT_DIR, "oof_predictions.jsonl")
-METRICS = os.path.join(OUT_DIR, "metrics.json")
-PARETO_PNG = os.path.join(OUT_DIR, "pareto.png")
+
+# ---- mode-tagged outputs ----
+OOF = os.path.join(OUT_DIR, f"oof_{_TAG}.jsonl")
+OOF_LOGREG = os.path.join(OUT_DIR, f"oof_logreg_{_TAG}.npy")
+ROUTER_META = os.path.join(OUT_DIR, f"router_meta_{_TAG}.json")
+METRICS = os.path.join(OUT_DIR, f"metrics_{_TAG}.json")
+PARETO_PNG = os.path.join(OUT_DIR, f"pareto_{_TAG}.png")
 
 # ---- token accounting ----
 SEQ = 64                       # visual tokens per partition (SmolVLM2-256M)
-# token cost of each fixed strategy comes from n_partitions in RESPONSES.
 
 # ---- label definition ----
 # DETAIL (positive) iff global-only is WRONG and gaze-foveated is RIGHT.
@@ -33,8 +50,12 @@ GLOBAL_ALGO = "B_global_only"
 FOVEA_ALGO = "C_gaze_foveated"
 FULL_ALGO = "A_full"
 
-# ---- question encoder (CPU-friendly) ----
-ENCODER = "sentence-transformers/all-MiniLM-L6-v2"   # 384-d, ~80MB, fast on CPU
+# ---- encoders (CPU-friendly) ----
+ENCODER = "sentence-transformers/all-MiniLM-L6-v2"   # question text -> 384-d
+CLIP_ENCODER = "clip-ViT-B-32"                        # image -> 512-d (via sentence-transformers)
+USE_GLOBAL_VIS = True                                 # embed the whole frame (scene gist)
+USE_FOVEA_VIS = True                                  # embed the gaze-centred crop (what's fixated)
+FOVEA_CROP_PCT = 25.0                                 # crop area = 25% of the image, centred on gaze
 
 # ---- cross-validation ----
 N_FOLDS = 5
