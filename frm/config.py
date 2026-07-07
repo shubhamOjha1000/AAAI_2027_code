@@ -46,12 +46,12 @@ DTYPE = "bfloat16"          # for the frozen VLM on GPU
 DEVICE = "cuda"             # label-gen + answer-preservation need GPU
 
 # --------------------------------------------------------------------------- #
-# global-thumbnail grid  (SmolVLM2: 64 image tokens/tile on an 8x8 grid)
+# global-thumbnail grid  (SmolVLM2-2.2B: 81 image tokens/tile on a 9x9 grid)
 # --------------------------------------------------------------------------- #
-K = 64                     # global tokens
-GRID = 8                   # sqrt(K); g_idx = gy*GRID + gx
+K = 81                     # global tokens (matches Stage-3 SEQ=81 for the 2.2B)
+GRID = 9                   # sqrt(K); g_idx = gy*GRID + gx
 # D (hidden dim) is read dynamically from the model at run time (~2048 for the 2.2B).
-# We assert the model really yields K=64 tokens and store the observed D in meta.
+# We assert the model really yields K=81 tokens and store the observed D in meta.
 
 # --------------------------------------------------------------------------- #
 # fovea / FRM partition (Section 3.1) — the gaze cell + its 1-ring are EXCLUDED

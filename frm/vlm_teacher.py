@@ -12,7 +12,7 @@ Responsibilities
 
 Key implementation facts for SmolVLM2 (transformers >= 4.46):
   * Load with attn_implementation="eager" so output_attentions works.
-  * do_image_splitting=False  -> exactly K=64 global image tokens (one 8x8 tile).
+  * do_image_splitting=False  -> exactly K=81 global image tokens (one 9x9 tile).
   * image token id = model.config.image_token_id.
   * The model accepts inputs_embeds (no pixel_values) -> lets us inject a modified G
     (mask a token for LOO, or drop non-KEEP tokens for answer-preservation).
@@ -33,7 +33,7 @@ class VLMTeacher:
 
         self.device = device
         self.processor = AutoProcessor.from_pretrained(model_id)
-        # one 8x8 global tile -> exactly K image tokens
+        # one 9x9 global tile -> exactly K image tokens
         try:
             self.processor.image_processor.do_image_splitting = False
         except Exception:
@@ -174,7 +174,7 @@ class VLMTeacher:
         return total
 
     def loo_importance(self, bundle, G_np, cand_idx=None):
-        """imp_loo[k] = relu(logp_full - logp_(mask k)). 64 fwd passes (Method B)."""
+        """imp_loo[k] = relu(logp_full - logp_(mask k)). K fwd passes (Method B)."""
         logp_full = self._answer_logprob(bundle, G_np)
         imp = np.zeros(C.K, np.float32)
         idx = range(C.K) if cand_idx is None else cand_idx

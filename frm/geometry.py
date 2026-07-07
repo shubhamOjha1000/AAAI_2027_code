@@ -1,6 +1,6 @@
 """Grid geometry: gaze -> cell, fovea region, cell distances.
 
-The global thumbnail is a GRID x GRID (8x8 = 64) token grid. Cell index is
+The global thumbnail is a GRID x GRID (9x9 = 81) token grid. Cell index is
 row-major: g_idx = gy*GRID + gx, with gx = col, gy = row.
 """
 import numpy as np
