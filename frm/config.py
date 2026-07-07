@@ -42,7 +42,7 @@ IMP_NPZ = os.path.join(LABELS_DIR, "imp.npz")         # imp_answer/question/cont
 # model
 # --------------------------------------------------------------------------- #
 MODEL_ID = os.environ.get("MODEL_ID", "HuggingFaceTB/SmolVLM2-2.2B-Instruct")
-DTYPE = "bfloat16"          # for the frozen VLM on GPU
+DTYPE = os.environ.get("DTYPE", "auto")   # auto -> bf16 on A100/L4, fp16 on T4
 DEVICE = "cuda"             # label-gen + answer-preservation need GPU
 
 # --------------------------------------------------------------------------- #

@@ -27,11 +27,21 @@ def _dtype(name):
     return {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[name]
 
 
+def _resolve_dtype(name):
+    """'auto' -> bf16 only where the GPU supports it (A100/L4), else fp16 (T4)."""
+    if name == "auto":
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        return torch.float16
+    return _dtype(name)
+
+
 class VLMTeacher:
     def __init__(self, model_id=C.MODEL_ID, device=C.DEVICE, dtype=C.DTYPE):
         from transformers import AutoProcessor, AutoModelForImageTextToText
 
         self.device = device
+        self.torch_dtype = _resolve_dtype(dtype)
         self.processor = AutoProcessor.from_pretrained(model_id)
         # one 9x9 global tile -> exactly K image tokens
         try:
@@ -39,7 +49,7 @@ class VLMTeacher:
         except Exception:
             pass
         self.model = AutoModelForImageTextToText.from_pretrained(
-            model_id, torch_dtype=_dtype(dtype), attn_implementation="eager"
+            model_id, torch_dtype=self.torch_dtype, attn_implementation="eager"
         ).to(device).eval()
         for p in self.model.parameters():
             p.requires_grad_(False)
@@ -47,6 +57,8 @@ class VLMTeacher:
         self.image_token_id = int(self.model.config.image_token_id)
         self.d = int(self.model.config.text_config.hidden_size)
         self.eos = self.processor.tokenizer.eos_token or ""
+        print(f"[VLMTeacher] dtype={self.torch_dtype}, d={self.d}, "
+              f"image_token_id={self.image_token_id}")
 
     # ------------------------------------------------------------------ #
     # low-level helpers
@@ -57,7 +69,14 @@ class VLMTeacher:
         return self.processor.apply_chat_template(messages, add_generation_prompt=True)
 
     def _proc(self, text, image):
-        return self.processor(text=text, images=[image], return_tensors="pt").to(self.device)
+        enc = self.processor(text=text, images=[image], return_tensors="pt").to(self.device)
+        # cast floating inputs (pixel_values) to the model dtype so conv/matmul
+        # weights and inputs match (fixes "Expected bias Float but got BFloat16");
+        # leave int tensors (input_ids, masks) alone.
+        for k, v in list(enc.items()):
+            if torch.is_tensor(v) and torch.is_floating_point(v):
+                enc[k] = v.to(self.torch_dtype)
+        return enc
 
     @staticmethod
     def _as_tensor(x):
