@@ -59,24 +59,44 @@ class VLMTeacher:
     def _proc(self, text, image):
         return self.processor(text=text, images=[image], return_tensors="pt").to(self.device)
 
+    @staticmethod
+    def _as_tensor(x):
+        """Normalize a HF return (ModelOutput / tuple / tensor) to a Tensor."""
+        if hasattr(x, "last_hidden_state"):
+            x = x.last_hidden_state
+        if isinstance(x, (list, tuple)):
+            x = x[0]
+        return x
+
     def _image_features(self, inputs):
-        """Post-connector global tokens -> [K, d] float32 (question-free)."""
+        """Post-connector global tokens -> [K, d] float32 (question-free).
+
+        Robust across transformers versions: try get_image_features (on the inner
+        model, then the wrapper), accept it only if it yields exactly K tokens of
+        dim d; otherwise run vision_model -> connector manually (guaranteed
+        post-connector, K x d).
+        """
         pv = inputs["pixel_values"]
         kw = {}
         if "pixel_attention_mask" in inputs:
             kw["pixel_attention_mask"] = inputs["pixel_attention_mask"]
+        base = getattr(self.model, "model", self.model)
+        feats = None
         with torch.no_grad():
-            try:
-                feats = self.model.get_image_features(pixel_values=pv, **kw)
-            except Exception:
-                # manual fallback: vision tower + connector
-                vm = self.model.model.vision_model
-                cn = self.model.model.connector
+            for obj in (base, self.model):
+                if obj is not None and hasattr(obj, "get_image_features"):
+                    try:
+                        t = self._as_tensor(obj.get_image_features(pixel_values=pv, **kw))
+                        t = t.reshape(-1, self.d)
+                        if t.shape[0] == C.K:            # right count of post-connector tokens
+                            feats = t
+                            break
+                    except Exception:
+                        pass
+            if feats is None:                            # manual vision tower + connector
                 pv_ = pv.view(-1, *pv.shape[-3:])
-                h = vm(pixel_values=pv_).last_hidden_state
-                feats = cn(h)
-        feats = feats[0] if isinstance(feats, (list, tuple)) else feats
-        feats = feats.reshape(-1, self.d)                 # [num_img*K, d]
+                h = self._as_tensor(base.vision_model(pixel_values=pv_))
+                feats = self._as_tensor(base.connector(h)).reshape(-1, self.d)
         assert feats.shape[0] == C.K, (
             f"expected {C.K} global tokens, got {feats.shape[0]} — check "
             f"do_image_splitting=False and the SmolVLM2 tile token count")
