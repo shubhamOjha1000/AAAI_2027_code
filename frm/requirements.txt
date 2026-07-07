@@ -1,0 +1,11 @@
+# Colab GPU. transformers>=4.46 has SmolVLM2 support.
+torch>=2.2
+transformers>=4.46.0
+accelerate>=0.34
+num2words          # SmolVLM processor dependency
+pillow
+numpy
+scipy
+scikit-learn
+matplotlib
+tqdm
