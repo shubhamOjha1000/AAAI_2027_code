@@ -138,19 +138,35 @@ class VLMTeacher:
         return self._image_features(inputs)
 
     def build_bundle(self, image, question, answer):
-        """Teacher-forced (image+question+answer) token bundle + G, with spans."""
+        """Teacher-forced (image+question+answer) token bundle + G, with spans.
+
+        We build the answer span by CONCATENATING TOKEN IDS (prompt ids + answer
+        ids), NOT by re-tokenizing a `prompt + answer` STRING. String re-tokenizing
+        could collapse the boundary and yield an empty answer span -> all-zero
+        rollout labels. Token concat guarantees a non-empty ans_pos.
+        """
         prompt = self._prompt_text(question)
-        p_inputs = self._proc(prompt, image)
-        L_p = int(p_inputs["input_ids"].shape[1])
+        p_inputs = self._proc(prompt, image)               # image already expanded to K tokens
+        p_ids = p_inputs["input_ids"][0]
+        L_p = int(p_ids.shape[0])
 
-        full_text = prompt + answer + self.eos
-        f_inputs = self._proc(full_text, image)
-        ids = f_inputs["input_ids"][0].tolist()
+        ans_ids = self.processor.tokenizer(
+            answer + self.eos, add_special_tokens=False)["input_ids"]
+        assert len(ans_ids) > 0, f"empty answer tokenization for: {answer!r}"
+        ans_t = torch.tensor(ans_ids, dtype=p_ids.dtype, device=p_ids.device)
+        full_ids = torch.cat([p_ids, ans_t]).unsqueeze(0)  # [1, L_p + |ans|]
+
+        # reuse the prompt's image tensors; just extend ids + attention mask
+        f_inputs = dict(p_inputs)
+        f_inputs["input_ids"] = full_ids
+        f_inputs["attention_mask"] = torch.ones_like(full_ids)
+
+        ids = full_ids[0].tolist()
         T = len(ids)
-
         img_pos = [i for i, t in enumerate(ids) if t == self.image_token_id]
         assert len(img_pos) == C.K, f"got {len(img_pos)} image tokens, expected {C.K}"
         ans_pos = list(range(L_p, T))
+        assert len(ans_pos) > 0, "empty answer span (ans_pos) — teacher labels would be all zero"
 
         # question token span: search for the question's token ids inside the prompt
         q_ids = self.processor.tokenizer(question, add_special_tokens=False)["input_ids"]

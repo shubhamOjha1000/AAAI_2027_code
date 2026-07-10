@@ -48,35 +48,48 @@ def generate(limit=None, loo_validate=C.LOO_VALIDATE_N):
     imp_c = _load_or_zeros("imp_context", N)
     imp_l = _load_or_zeros("imp_loo", N)
 
+    SAVE_EVERY = 20
     meta_f = open(C.META_JSONL, "a")
-    for si, s in enumerate(tqdm(todo, desc="label-gen")):
-        row = key_to_row[s["key"]]
-        img = load_image(s["image_path"])
-        bundle = teacher.build_bundle(img, s["question"], s["answer"])
-        a, q = teacher.rollout_importance(bundle)
-        c = np.maximum(0.0, a - q)
+    pending_meta = []   # meta lines whose G/imp are computed but not yet persisted
 
-        G_mm[row] = bundle["G"].astype(np.float16)
-        imp_a[row], imp_q[row], imp_c[row] = a, q, c
-
-        do_loo = si < loo_validate
-        if do_loo:
-            imp_l[row] = teacher.loo_importance(bundle, bundle["G"])
-
-        cm = candidate_mask(s["g_idx"]).tolist()
-        meta_f.write(json.dumps({
-            "key": s["key"], "id": s["id"], "row": row,
-            "question_type": s["question_type"], "g_idx": s["g_idx"],
-            "x_norm": s["x_norm"], "y_norm": s["y_norm"],
-            "question": s["question"], "answer": s["answer"],
-            "cand_mask": cm, "has_loo": bool(do_loo), "d": d,
-        }) + "\n")
+    def _checkpoint():
+        # persist arrays FIRST, then record meta -> meta never gets ahead of the
+        # data (a resumed run must never skip a sample whose imp row is still zero).
+        G_mm.flush()
+        _save_imp(imp_a, imp_q, imp_c, imp_l)
+        for line in pending_meta:
+            meta_f.write(line + "\n")
         meta_f.flush()
-        if si % 25 == 0:
-            _save_imp(imp_a, imp_q, imp_c, imp_l)
-    G_mm.flush()
-    _save_imp(imp_a, imp_q, imp_c, imp_l)
-    meta_f.close()
+        pending_meta.clear()
+
+    try:
+        for si, s in enumerate(tqdm(todo, desc="label-gen")):
+            row = key_to_row[s["key"]]
+            img = load_image(s["image_path"])
+            bundle = teacher.build_bundle(img, s["question"], s["answer"])
+            a, q = teacher.rollout_importance(bundle)
+            c = np.maximum(0.0, a - q)
+
+            G_mm[row] = bundle["G"].astype(np.float16)
+            imp_a[row], imp_q[row], imp_c[row] = a, q, c
+
+            do_loo = si < loo_validate
+            if do_loo:
+                imp_l[row] = teacher.loo_importance(bundle, bundle["G"])
+
+            cm = candidate_mask(s["g_idx"]).tolist()
+            pending_meta.append(json.dumps({
+                "key": s["key"], "id": s["id"], "row": row,
+                "question_type": s["question_type"], "g_idx": s["g_idx"],
+                "x_norm": s["x_norm"], "y_norm": s["y_norm"],
+                "question": s["question"], "answer": s["answer"],
+                "cand_mask": cm, "has_loo": bool(do_loo), "d": d,
+            }))
+            if si % SAVE_EVERY == 0:
+                _checkpoint()
+    finally:
+        _checkpoint()          # persist whatever is buffered, even on error/interrupt
+        meta_f.close()
     print("done. labels at", C.LABELS_DIR)
 
 
